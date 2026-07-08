@@ -1,6 +1,8 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use anyhow::Result;
 use crossterm::{
@@ -186,10 +188,20 @@ impl TuiApp {
 
         let (tx, mut rx) = mpsc::channel(100);
 
+        // Suspended while an external editor owns the terminal, so this
+        // listener doesn't race the editor's own stdin reads (that race is
+        // what causes leftover keystrokes, e.g. needing an extra Enter after `:q`).
+        let editor_active = Arc::new(AtomicBool::new(false));
+
         // Spawn input listener thread
         let tx_input = tx.clone();
+        let editor_active_bg = editor_active.clone();
         tokio::spawn(async move {
             loop {
+                if editor_active_bg.load(Ordering::Relaxed) {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
                 if event::poll(Duration::from_millis(50)).unwrap_or(false) {
                     if let Ok(event) = event::read() {
                         if tx_input.send(AppEvent::TerminalEvent(event)).await.is_err() {
@@ -328,7 +340,11 @@ impl TuiApp {
                                 if self.selected_panel == ActivePanel::Requests {
                                     if let Some(index) = self.request_state.selected() {
                                         if let Some(path) = self.buffers.get(index).cloned() {
-                                            self.open_editor(&mut terminal, &path)?;
+                                            self.open_editor(&mut terminal, &path, &editor_active)?;
+                                            // Discard any stray events the background
+                                            // listener queued during the race window
+                                            // before it saw the suspend flag.
+                                            while rx.try_recv().is_ok() {}
                                         }
                                     }
                                 }
@@ -371,7 +387,11 @@ impl TuiApp {
         Ok(())
     }
 
-    fn open_editor<B: ratatui::backend::Backend>(&mut self, terminal: &mut Terminal<B>, path: &Path) -> Result<()> {
+    fn open_editor<B: ratatui::backend::Backend>(&mut self, terminal: &mut Terminal<B>, path: &Path, editor_active: &Arc<AtomicBool>) -> Result<()> {
+        // Stop the background input listener from reading stdin before the
+        // editor takes it over, otherwise the two race for keystrokes.
+        editor_active.store(true, Ordering::Relaxed);
+
         disable_raw_mode()?;
         execute!(
             io::stdout(),
@@ -396,6 +416,8 @@ impl TuiApp {
         let _ = io::stdout().flush();
         terminal.clear()?;
         terminal.hide_cursor()?;
+
+        editor_active.store(false, Ordering::Relaxed);
 
         Ok(())
     }
