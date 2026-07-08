@@ -467,14 +467,14 @@ impl TuiApp {
         let method = reqwest::Method::from_bytes(req_file.method.to_uppercase().as_bytes())?;
 
         let mut builder = client.request(method, &req_file.url);
-        if let Some(headers) = req_file.headers {
+        if let Some(ref headers) = req_file.headers {
             for (k, v) in headers {
                 builder = builder.header(k, v);
             }
         }
-        if let Some(body) = req_file.body {
+        if let Some(ref body) = req_file.body {
             match body {
-                serde_yaml::Value::String(s) => { builder = builder.body(s); }
+                serde_yaml::Value::String(s) => { builder = builder.body(s.clone()); }
                 other => {
                     let json_val = serde_json::to_value(other)?;
                     builder = builder.json(&json_val);
@@ -516,7 +516,29 @@ impl TuiApp {
             body_str.to_string()
         };
 
-        let response_view = format!("=== Headers ===\n{}\n\n=== Body ===\n{}", headers_str, formatted_body);
+        let req_headers_str = req_file.headers.as_ref()
+            .map(|h| h.iter().map(|(k, v)| format!("  {}: {}", k, v)).collect::<Vec<String>>().join("\n"))
+            .unwrap_or_else(|| "  None".to_string());
+
+        let req_body_str = req_file.body.as_ref()
+            .map(|b| serde_json::to_string_pretty(&b).unwrap_or_else(|_| format!("{:?}", b)))
+            .unwrap_or_else(|| "  None".to_string());
+
+        let response_view = format!(
+            "=== Response Body ===\n{}\n\n\
+             === Request Details ===\n\
+             * Method: {}\n\
+             * URL: {}\n\
+             * Headers:\n{}\n\
+             * Body:\n{}\n\n\
+             === Response Headers ===\n{}",
+            formatted_body,
+            req_file.method.to_uppercase(),
+            req_file.url,
+            req_headers_str,
+            req_body_str,
+            headers_str
+        );
         Ok((status_view, response_view))
     }
 
