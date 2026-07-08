@@ -1,5 +1,5 @@
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use anyhow::Result;
@@ -284,7 +284,9 @@ impl TuiApp {
             EnterAlternateScreen,
             EnableMouseCapture
         )?;
+        let _ = io::stdout().flush();
         terminal.clear()?;
+        terminal.hide_cursor()?;
 
         // Refresh lists
         self.refresh_requests()?;
