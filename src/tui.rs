@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Terminal,
 };
 use tokio::sync::mpsc;
@@ -33,6 +33,7 @@ pub struct TuiApp {
     loading: bool,
     running_request: Option<PathBuf>,
     response_scroll: u16,
+    show_help: bool,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -65,6 +66,7 @@ impl TuiApp {
             loading: false,
             running_request: None,
             response_scroll: 0,
+            show_help: false,
         };
 
         app.refresh_requests()?;
@@ -166,7 +168,15 @@ impl TuiApp {
                             break;
                         }
 
+                        if self.show_help {
+                            self.show_help = false;
+                            continue;
+                        }
+
                         match key.code {
+                            KeyCode::Char('?') | KeyCode::Esc => {
+                                self.show_help = true;
+                            }
                             KeyCode::Char('q') => break,
                             KeyCode::Tab => {
                                 self.selected_panel = match self.selected_panel {
@@ -509,6 +519,7 @@ impl TuiApp {
              - Enter: Run request / Kích hoạt environment\n\
              - e: Open selected request file in Vim\n\
              - r: Refresh folder files\n\
+             - ?, Esc: Show this Help menu\n\
              - q, Ctrl+C: Quit"
         } else {
             &self.response_view
@@ -519,5 +530,52 @@ impl TuiApp {
             .wrap(Wrap { trim: false })
             .scroll((self.response_scroll, 0));
         f.render_widget(response_panel, main_chunks[1]);
+
+        // Draw Help Popup
+        if self.show_help {
+            let block = Block::default()
+                .title(" Help | Press any key to close ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD));
+            
+            let help_text = "\
+               Keybindings:\n\n\
+               * Tab              : Switch panels (Cycle)\n\
+               * h/l, Left/Right  : Switch panels (Vim style)\n\
+               * j/k, Up/Down     : Navigate lists / Scroll response\n\
+               * Enter            : Run request / Activate environment\n\
+               * e                : Open request file in Vim\n\
+               * r                : Refresh workspace files\n\
+               * ? / Esc          : Toggle this Help popup\n\
+               * q, Ctrl+C        : Quit app";
+
+            let paragraph = Paragraph::new(help_text)
+                .block(block)
+                .wrap(Wrap { trim: false });
+                
+            let area = centered_rect(50, 45, size);
+            f.render_widget(Clear, area);
+            f.render_widget(paragraph, area);
+        }
     }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
