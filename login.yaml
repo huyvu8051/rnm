@@ -1,0 +1,8 @@
+name: Login Request
+method: POST
+url: https://httpbin.org/post
+body:
+  username: admin
+  password: "{{secret_pass}}"
+exports:
+  token: body.json.username

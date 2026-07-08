@@ -1,0 +1,5 @@
+name: Get Profile
+method: GET
+url: https://httpbin.org/headers
+headers:
+  Authorization: "Bearer {{token}}"
