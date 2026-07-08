@@ -23,7 +23,7 @@ use crate::request::RequestFile;
 
 pub struct TuiApp {
     env_manager: EnvManager,
-    requests: Vec<PathBuf>,
+    buffers: Vec<PathBuf>,
     request_state: ListState,
     envs: Vec<String>,
     env_state: ListState,
@@ -34,6 +34,12 @@ pub struct TuiApp {
     running_request: Option<PathBuf>,
     response_scroll: u16,
     show_help: bool,
+
+    // Telescope (File finder) state
+    telescope_active: bool,
+    telescope_files: Vec<PathBuf>,
+    telescope_query: String,
+    telescope_selected: usize,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -56,7 +62,7 @@ impl TuiApp {
     pub fn new(env_manager: EnvManager) -> Result<Self> {
         let mut app = Self {
             env_manager,
-            requests: Vec::new(),
+            buffers: Vec::new(),
             request_state: ListState::default(),
             envs: Vec::new(),
             env_state: ListState::default(),
@@ -67,23 +73,39 @@ impl TuiApp {
             running_request: None,
             response_scroll: 0,
             show_help: false,
+            telescope_active: false,
+            telescope_files: Vec::new(),
+            telescope_query: String::new(),
+            telescope_selected: 0,
         };
 
-        app.refresh_requests()?;
+        // Open some initial buffer if any YAML requests are in current folder (not recursively)
+        app.load_initial_buffers()?;
         app.refresh_envs()?;
         Ok(app)
     }
 
-    fn refresh_requests(&mut self) -> Result<()> {
-        let mut files = Vec::new();
-        self.scan_dir(Path::new("."), &mut files)?;
-        self.requests = files;
-        if !self.requests.is_empty() {
-            if self.request_state.selected().is_none() {
-                self.request_state.select(Some(0));
+    fn load_initial_buffers(&mut self) -> Result<()> {
+        let dir = Path::new(".");
+        if dir.is_dir() {
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                        if ext == "yaml" || ext == "yml" {
+                            if let Ok(content) = fs::read_to_string(&path) {
+                                if content.contains("method:") && content.contains("url:") {
+                                    self.buffers.push(path);
+                                }
+                            }
+                        }
+                    }
+                }
             }
-        } else {
-            self.request_state.select(None);
+        }
+        if !self.buffers.is_empty() {
+            self.request_state.select(Some(0));
         }
         Ok(())
     }
@@ -114,6 +136,28 @@ impl TuiApp {
             }
         }
         Ok(())
+    }
+
+    fn open_telescope(&mut self) -> Result<()> {
+        let mut files = Vec::new();
+        self.scan_dir(Path::new("."), &mut files)?;
+        self.telescope_files = files;
+        self.telescope_query.clear();
+        self.telescope_selected = 0;
+        self.telescope_active = true;
+        Ok(())
+    }
+
+    fn filtered_telescope_files(&self) -> Vec<PathBuf> {
+        let query = self.telescope_query.to_lowercase();
+        self.telescope_files
+            .iter()
+            .filter(|p| {
+                let name = p.to_string_lossy().to_lowercase();
+                name.contains(&query)
+            })
+            .cloned()
+            .collect()
     }
 
     fn refresh_envs(&mut self) -> Result<()> {
@@ -168,14 +212,65 @@ impl TuiApp {
                             break;
                         }
 
+                        // 1. Handle Telescope Input Mode
+                        if self.telescope_active {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    self.telescope_active = false;
+                                }
+                                KeyCode::Backspace => {
+                                    self.telescope_query.pop();
+                                    self.telescope_selected = 0;
+                                }
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    let matches = self.filtered_telescope_files();
+                                    if !matches.is_empty() {
+                                        self.telescope_selected = self.telescope_selected
+                                            .saturating_sub(1);
+                                    }
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    let matches = self.filtered_telescope_files();
+                                    if !matches.is_empty() {
+                                        if self.telescope_selected + 1 < matches.len() {
+                                            self.telescope_selected += 1;
+                                        }
+                                    }
+                                }
+                                KeyCode::Char(c) => {
+                                    self.telescope_query.push(c);
+                                    self.telescope_selected = 0;
+                                }
+                                KeyCode::Enter => {
+                                    let matches = self.filtered_telescope_files();
+                                    if let Some(path) = matches.get(self.telescope_selected) {
+                                        // Open selected file in buffers
+                                        if !self.buffers.contains(path) {
+                                            self.buffers.push(path.clone());
+                                        }
+                                        let index = self.buffers.iter().position(|p| p == path).unwrap_or(0);
+                                        self.request_state.select(Some(index));
+                                        self.telescope_active = false;
+                                    }
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+
+                        // 2. Handle Help Mode
                         if self.show_help {
                             self.show_help = false;
                             continue;
                         }
 
+                        // 3. Normal Mode Keybindings
                         match key.code {
                             KeyCode::Char('?') | KeyCode::Esc => {
                                 self.show_help = true;
+                            }
+                            KeyCode::Char('t') => {
+                                let _ = self.open_telescope();
                             }
                             KeyCode::Char('q') => break,
                             KeyCode::Tab => {
@@ -184,6 +279,22 @@ impl TuiApp {
                                     ActivePanel::Environments => ActivePanel::Response,
                                     ActivePanel::Response => ActivePanel::Requests,
                                 };
+                            }
+                            // Close/Delete buffer
+                            KeyCode::Char('d') => {
+                                if self.selected_panel == ActivePanel::Requests {
+                                    if let Some(index) = self.request_state.selected() {
+                                        if index < self.buffers.len() {
+                                            self.buffers.remove(index);
+                                            if self.buffers.is_empty() {
+                                                self.request_state.select(None);
+                                            } else {
+                                                let next = index.min(self.buffers.len() - 1);
+                                                self.request_state.select(Some(next));
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             // Vim Navigation (h/l to switch panels)
                             KeyCode::Char('h') | KeyCode::Left => {
@@ -215,11 +326,11 @@ impl TuiApp {
                             // Edit selected file with Vim / Editor
                             KeyCode::Char('e') => {
                                 if self.selected_panel == ActivePanel::Requests {
-                                     if let Some(index) = self.request_state.selected() {
-                                         if let Some(path) = self.requests.get(index).cloned() {
-                                             self.open_editor(&mut terminal, &path)?;
-                                         }
-                                     }
+                                    if let Some(index) = self.request_state.selected() {
+                                        if let Some(path) = self.buffers.get(index).cloned() {
+                                            self.open_editor(&mut terminal, &path)?;
+                                        }
+                                    }
                                 }
                             }
                             KeyCode::Enter => {
@@ -230,14 +341,12 @@ impl TuiApp {
                                 }
                             }
                             KeyCode::Char('r') => {
-                                self.refresh_requests()?;
                                 self.refresh_envs()?;
                             }
                             _ => {}
                         }
                     }
                     AppEvent::ResponseFinished { status, response, path } => {
-                        // Check if the received response is for the currently running request
                         if Some(path) == self.running_request {
                             self.status_view = status;
                             self.response_view = response;
@@ -288,17 +397,15 @@ impl TuiApp {
         terminal.clear()?;
         terminal.hide_cursor()?;
 
-        // Refresh lists
-        self.refresh_requests()?;
         Ok(())
     }
 
     fn move_selection(&mut self, offset: i32) {
         match self.selected_panel {
             ActivePanel::Requests => {
-                if self.requests.is_empty() { return; }
+                if self.buffers.is_empty() { return; }
                 let current = self.request_state.selected().unwrap_or(0) as i32;
-                let next = (current + offset).rem_euclid(self.requests.len() as i32) as usize;
+                let next = (current + offset).rem_euclid(self.buffers.len() as i32) as usize;
                 self.request_state.select(Some(next));
             }
             ActivePanel::Environments => {
@@ -322,7 +429,7 @@ impl TuiApp {
 
     async fn start_request_execution(&mut self, tx: mpsc::Sender<AppEvent>) -> Result<()> {
         if let Some(index) = self.request_state.selected() {
-            if let Some(path) = self.requests.get(index).cloned() {
+            if let Some(path) = self.buffers.get(index).cloned() {
                 self.loading = true;
                 let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("request");
                 self.status_view = format!("Sending {}...", filename);
@@ -334,7 +441,6 @@ impl TuiApp {
                 let env_vars = self.env_manager.load_env(&env_profile)?;
                 let env_manager_clone = self.env_manager.clone();
 
-                // Spawn task to perform request in background
                 tokio::spawn(async move {
                     let result = Self::execute_request_task(path.clone(), env_vars, env_manager_clone).await;
                     let (status, response) = match result {
@@ -392,7 +498,6 @@ impl TuiApp {
         let body_str = String::from_utf8_lossy(&body_bytes);
 
         let formatted_body = if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&body_str) {
-            // Extract exports if any
             if let Some(ref exp_map) = req_file.exports {
                 for (env_var, json_path) in exp_map {
                     if let Some(val) = Self::resolve_json_path_static(&json_val, json_path) {
@@ -449,14 +554,14 @@ impl TuiApp {
             ])
             .split(main_chunks[0]);
 
-        // 1. Render Requests List
+        // 1. Render Active Request Buffers
         let req_border_style = if self.selected_panel == ActivePanel::Requests {
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         };
 
-        let req_items: Vec<ListItem> = self.requests
+        let req_items: Vec<ListItem> = self.buffers
             .iter()
             .map(|path| {
                 let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("Request");
@@ -468,7 +573,7 @@ impl TuiApp {
             .collect();
 
         let req_list = List::new(req_items)
-            .block(Block::default().borders(Borders::ALL).title(" Requests (Enter to Run, 'e' to Edit) ").border_style(req_border_style))
+            .block(Block::default().borders(Borders::ALL).title(" Open Buffers ('d' to close) ").border_style(req_border_style))
             .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
             .highlight_symbol(">>");
         f.render_stateful_widget(req_list, sidebar_chunks[0], &mut self.request_state);
@@ -498,7 +603,7 @@ impl TuiApp {
             .collect();
 
         let env_list = List::new(env_items)
-            .block(Block::default().borders(Borders::ALL).title(" Environments (Enter to Select) ").border_style(env_border_style))
+            .block(Block::default().borders(Borders::ALL).title(" Environments ").border_style(env_border_style))
             .highlight_style(Style::default().bg(Color::DarkGray))
             .highlight_symbol(">>");
         f.render_stateful_widget(env_list, sidebar_chunks[1], &mut self.env_state);
@@ -514,14 +619,15 @@ impl TuiApp {
         let display_text = if self.loading && self.response_view.is_empty() {
             "Sending HTTP request in background... You can continue navigating using Vim keys."
         } else if self.response_view.is_empty() {
-            "Select a request and press Enter to execute.\n\n\
+            "Press 't' to open Telescope and search for files to load into buffers.\n\n\
              Keybindings:\n\
+             - t: Open Telescope File Finder\n\
+             - d: Close selected buffer\n\
              - Tab, h/l, Left/Right: Switch panels\n\
              - j/k, Up/Down: Navigate / Scroll response\n\
-             - Enter: Run request / Kích hoạt environment\n\
+             - Enter: Run request / Activate environment\n\
              - e: Open selected request file in Vim\n\
-             - r: Refresh folder files\n\
-             - ?, Esc: Show this Help menu\n\
+             - ?, Esc: Show Help menu\n\
              - q, Ctrl+C: Quit"
         } else {
             &self.response_view
@@ -533,7 +639,49 @@ impl TuiApp {
             .scroll((self.response_scroll, 0));
         f.render_widget(response_panel, main_chunks[1]);
 
-        // Draw Help Popup
+        // Draw Telescope Popup if active
+        if self.telescope_active {
+            let telescope_area = centered_rect(60, 60, size);
+            f.render_widget(Clear, telescope_area);
+
+            let telescope_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3), // Input query box
+                    Constraint::Min(3),    // Results list
+                ])
+                .split(telescope_area);
+
+            // Draw query input
+            let query_widget = Paragraph::new(self.telescope_query.as_str())
+                .block(Block::default().borders(Borders::ALL).title(" Telescope (Fuzzy Search *.yaml) "));
+            f.render_widget(query_widget, telescope_layout[0]);
+
+            // Draw matches list
+            let matches = self.filtered_telescope_files();
+            let matches_items: Vec<ListItem> = matches
+                .iter()
+                .enumerate()
+                .map(|(idx, path)| {
+                    let text = path.to_string_lossy();
+                    let style = if idx == self.telescope_selected {
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Cyan)
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::raw(if idx == self.telescope_selected { ">> " } else { "   " }),
+                        Span::styled(text, style),
+                    ]))
+                })
+                .collect();
+
+            let matches_list = List::new(matches_items)
+                .block(Block::default().borders(Borders::ALL).title(format!(" {} files found ", matches.len())));
+            f.render_widget(matches_list, telescope_layout[1]);
+        }
+
+        // Draw Help Popup if active
         if self.show_help {
             let block = Block::default()
                 .title(" Help | Press any key to close ")
@@ -542,12 +690,13 @@ impl TuiApp {
             
             let help_text = "\
                Keybindings:\n\n\
+               * t                : Open Telescope File Finder\n\
+               * d                : Close/delete selected buffer\n\
                * Tab              : Switch panels (Cycle)\n\
                * h/l, Left/Right  : Switch panels (Vim style)\n\
                * j/k, Up/Down     : Navigate lists / Scroll response\n\
                * Enter            : Run request / Activate environment\n\
                * e                : Open request file in Vim\n\
-               * r                : Refresh workspace files\n\
                * ? / Esc          : Toggle this Help popup\n\
                * q, Ctrl+C        : Quit app";
 
