@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 mod env;
 mod request;
+mod tui;
 
 use env::EnvManager;
 use request::{RequestRunner, RequestFile};
@@ -183,7 +184,10 @@ async fn main() -> Result<()> {
             exports: Some(exports),
         }
     } else {
-        return Err(anyhow!("Missing URL or request file (-f/--file). Run with --help for usage details."));
+        // Launch TUI mode by default if no arguments are provided
+        let app = tui::TuiApp::new(env_manager)?;
+        app.run().await?;
+        return Ok(());
     };
 
     // 3. Execute request using runner
