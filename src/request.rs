@@ -8,7 +8,7 @@ use colored::*;
 
 use crate::env::EnvManager;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestFile {
     pub name: Option<String>,
     pub method: String,

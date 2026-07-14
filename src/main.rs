@@ -4,7 +4,9 @@ use colored::*;
 use std::collections::HashMap;
 
 mod env;
+mod history;
 mod request;
+mod telescope;
 mod tui;
 
 use env::EnvManager;

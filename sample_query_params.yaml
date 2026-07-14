@@ -1,0 +1,12 @@
+name: Query Params Sample
+method: GET
+url: https://httpbin.org/get
+headers: null
+query:
+  page: 2askdl jflaksfjjakldjfslkajdsaksjdfljkas dfk
+  sort: descakdfj lkajsdf ;k
+  foo: bar alkdjfl kajsfasdlkfj kjsafdY
+  search: hello wo
+  test: ''
+body: null
+exports: null

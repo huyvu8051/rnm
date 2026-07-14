@@ -1,0 +1,6 @@
+name: GitHub User (Sample)
+method: GET
+url: https://api.github.com/users/octocat
+headers:
+  Accept: application/vnd.github+json
+  User-Agent: rnm-cli-sample

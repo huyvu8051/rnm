@@ -5,4 +5,4 @@ body:
   username: admin
   password: "{{secret_pass}}"
 exports:
-  token: body.json.username
+  token: json.username

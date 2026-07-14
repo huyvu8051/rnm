@@ -29,12 +29,20 @@ impl EnvManager {
         Ok(Self { config_dir })
     }
 
+    pub fn config_dir(&self) -> &Path {
+        &self.config_dir
+    }
+
     fn get_active_env_path(&self) -> PathBuf {
         self.config_dir.join("active_env")
     }
 
     fn get_env_dir(&self) -> PathBuf {
         self.config_dir.join("env")
+    }
+
+    pub fn env_file_path(&self, name: &str) -> PathBuf {
+        self.get_env_dir().join(format!("{}.yaml", name))
     }
 
     pub fn get_active_env_name(&self) -> Result<Option<String>> {
